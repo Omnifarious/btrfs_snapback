@@ -29,7 +29,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "flake8", "nox"]
 
 [project.urls]
 "Homepage" = "https://github.com/omnifarious/btrfs_snapback"
