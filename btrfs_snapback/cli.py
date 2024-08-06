@@ -1,3 +1,4 @@
+import datetime as dt
 import subprocess
 from pathlib import Path
 import re
@@ -14,6 +15,31 @@ def run_btrfs(args: list[str]) -> int:
     return subprocess.call(['btrfs'] + args,
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
+
+
+def as_timestamp_snapshot(path: Path) -> dt.datetime:
+    if not path.is_dir():
+        raise ValueError(f'Not a directory: {path}')
+    if timestamp_re.match(path.name) is None:
+        raise ValueError('Not formatted as a YYYY-MM-DD-HH:MM timestamp: '
+                         f'{path}')
+    if not all(check_is_subvolume(x) for x in path.iterdir()):
+        raise ValueError(f'Not all files in {path} are subvolumes')
+    return dt.datetime.strptime(path.name, '%Y-%m-%d-%H:%S')
+
+
+def inventory_library(library: Path) -> dict[dt.datetime, Path]:
+    inventory: dict[dt.datetime, Path] = dict()
+    to_snaphsot_map = (
+        (as_timestamp_snapshot(x), x) for x in library.iterdir()
+    )
+    for timestamp, path in to_snaphsot_map:
+        if timestamp in inventory:
+            raise click.BadParameter(f"{library} contains two equivalent "
+                                     "timestamps.")
+        else:
+            inventory[timestamp] = path
+    return inventory
 
 
 def check_is_subvolume(path: Path, underscore_allowed: bool = False) -> bool:
@@ -76,6 +102,18 @@ def main(backup_linkdir: Path, snapshot_library: Path, backup_library: Path):
         elif not check_is_subvolume(backup_link):
             raise click.BadParameter(f"{backup_link} is not a link to a "
                                      "subvolume")
+    try:
+        source_timestamps = inventory_library(snapshot_library)
+    except ValueError as err:
+        raise click.BadParameter(f"{snapshot_library} doesn't appear to be a "
+                                 f"valid source snapshot library because "
+                                 f"{err.args}")
+    try:
+        dest_timestamps = inventory_library(backup_library)
+    except ValueError as err:
+        raise click.BadParameter(f"{backup_library} doesn't appear to be a "
+                                 f"valid destination snapshot library because "
+                                 f"{err.args}")
 
 
 if __name__ == "__main__":
