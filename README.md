@@ -29,3 +29,27 @@ update from that timed snapshot to the current one instead.
 Part of my motivation for this is a system for offsite backups involving
 trading backup media with a remote location. This would mean a sort of
 staggered set of backups using the two media.
+
+## Map of the directory structure ##
+
+Here is a map of how the directory structure should look:
+
+ * source_filesystem
+   * backup_symlinks
+     * symlink_to_first_subvolume
+     * symlink_to_second_subvolume
+   * backup_snapshots
+     * 2024-07-30-12:30
+       * first_subvolume
+       * second_subvolume
+     * 2024-07-31-15:00
+       * first_subvolume
+       * second_subvolume
+
+---
+ 
+ * destination_filesystem (device to be backed up to)
+   * backed_up_snapshots
+     * 2024-07-30-12:30
+       * first_subvolume
+       * second_subvolume
