@@ -11,10 +11,13 @@ license is in the file named LICENSE.
 Assumptions:
 
  * You have a directory of relative symlinks to the btrfs subvolumes you
-want to backup.
+   want to backup.
+
  * You also have a directory containing subdirectories of snapshots.
+
    * Each such subdirectory is named `YYYY-MM-DD-HH:MM` for when that
      set of snapshots was made.
+
  * You have a different btrfs filesystem that also has a directory set
    up exactly like the previously mentioned directory on the filesystem
    to be backed up.
