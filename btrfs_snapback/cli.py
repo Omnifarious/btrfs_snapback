@@ -9,18 +9,23 @@ from click import Path as PArg
 timestamp_re = re.compile(r'^\d\d\d\d-\d\d-\d\d-\d\d:\d\d$')
 
 
-def check_is_subvolume(path: Path):
-    return subprocess.call(
-        ['btrfs', 'subvolume', 'show', str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL) == 0
+# Here largely to make mocking easier.
+def run_btrfs(args: list[str]) -> int:
+    return subprocess.call(['btrfs'] + args,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+
+
+def check_is_subvolume(path: Path, underscore_allowed: bool = False) -> bool:
+    if not underscore_allowed and path.name.startswith('.'):
+        raise ValueError(f"Subvolume {path} starts with reserved '_' "
+                         "character")
+    return run_btrfs(['subvolume', 'show', str(path)]) == 0
 
 
 def check_has_btrfs_tools():
     try:
-        result = subprocess.call(['btrfs', '--help'],
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+        result = run_btrfs(['--help'])
     except FileNotFoundError:
         return False
     return result == 0
@@ -59,6 +64,10 @@ def main(backup_linkdir: Path, snapshot_library: Path, backup_library: Path):
         raise click.ClickException("btrfs command is not installed, it's "
                                    "usually in the btrfs-progs package")
     for backup_link in backup_linkdir.iterdir():
+        if backup_link.name.startswith('_'):
+            raise click.BadParameter(f'Backup link {backup_link.name} '
+                                     'starts with underscore character, names '
+                                     'starting with underscores are reserved')
         if not backup_link.is_symlink():
             raise click.BadParameter(f"{backup_link} is not a symlink")
         elif not str(backup_link.readlink()).startswith('../'):
