@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 import subprocess
 from pathlib import Path
 import re
@@ -114,6 +115,25 @@ def main(backup_linkdir: Path, snapshot_library: Path, backup_library: Path):
         raise click.BadParameter(f"{backup_library} doesn't appear to be a "
                                  f"valid destination snapshot library because "
                                  f"{err.args}")
+    current_timestamp = dt.datetime.now()
+    # Floor to the minute (as opposed to round, or ceil).
+    current_timestamp -= dt.timedelta(
+        seconds=current_timestamp.second,
+        microseconds=current_timestamp.microsecond
+    )
+    if current_timestamp in (source_timestamps | dest_timestamps):
+        raise RuntimeError("Backup already at least partly exists for "
+                           f"{current_timestamp}")
+    print(source_timestamps, dest_timestamps)
+    current_timestamp_str =  current_timestamp.strftime('%Y-%m-%d-%H:%M')
+    todays_library = snapshot_library / current_timestamp_str
+    os.mkdir(todays_library)
+    for backup_link in backup_linkdir.iterdir():
+        run_btrfs([
+            'subvol', 'snap', '-r',
+            str(backup_link),
+            str(todays_library / backup_link.name)
+        ])
 
 
 if __name__ == "__main__":
