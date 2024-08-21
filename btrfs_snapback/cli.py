@@ -58,6 +58,47 @@ def check_has_btrfs_tools():
     return result == 0
 
 
+def first_backup(
+        current_timestamp: dt.datetime,
+        todays_snaps: Path,
+        backup_snaps: Path
+) -> None:
+    try:
+        backup_snaps.mkdir(exist_ok=False, parents=False)
+    except FileExistsError:
+        raise RuntimeError(f'Backup {backup_snaps} already exists')
+    # cd todays_snaps
+    # btrfs send -e * | pv -ar | btrfs recv backup_snaps
+    pv_exists = True
+    try:
+        subprocess.check_call(['pv', '--help'], stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        pv_exists = False
+    sendlist = list(str(d) for d in todays_snaps.iterdir())
+    btrfs_send = subprocess.Popen(
+        ['btrfs', 'send', '-e'] + sendlist,
+        stdout=subprocess.PIPE,
+        stdin=subprocess.DEVNULL
+    )
+    if pv_exists:
+        middle = subprocess.Popen(
+            ['pv', '-ar'],
+            stdin=btrfs_send.stdout,
+            stdout=subprocess.PIPE
+        )
+    else:
+        middle = btrfs_send
+    btrfs_receive = subprocess.Popen(
+        ['btrfs', 'receive', '-e', str(backup_snaps)],
+        stdin=middle.stdout,
+        stdout=subprocess.DEVNULL
+    )
+    btrfs_receive.wait()
+    middle.wait()
+    if middle is not btrfs_send:
+        btrfs_send.wait()
+
+
 @click.command()
 @click.argument(
     "backup_linkdir",
@@ -126,14 +167,26 @@ def main(backup_linkdir: Path, snapshot_library: Path, backup_library: Path):
                            f"{current_timestamp}")
     print(source_timestamps, dest_timestamps)
     current_timestamp_str =  current_timestamp.strftime('%Y-%m-%d-%H:%M')
-    todays_library = snapshot_library / current_timestamp_str
-    os.mkdir(todays_library)
+    todays_snaps = snapshot_library / current_timestamp_str
+    os.mkdir(todays_snaps)
     for backup_link in backup_linkdir.iterdir():
         run_btrfs([
             'subvol', 'snap', '-r',
             str(backup_link),
-            str(todays_library / backup_link.name)
+            str(todays_snaps / backup_link.name)
         ])
+    common_timestamps = list(
+        sorted(set(source_timestamps.keys()) & set(dest_timestamps.keys()))
+    )
+    if len(common_timestamps) == 0:
+        backup_snaps = backup_library / current_timestamp_str
+        first_backup(current_timestamp, todays_snaps, backup_snaps)
+    else:
+        incremental_backup(
+            current_timestamp, todays_snaps,
+            source_timestamps, dest_timestamps,
+            common_timestamps[-1]
+        )
 
 
 if __name__ == "__main__":
