@@ -25,7 +25,7 @@ def as_timestamp_snapshot(path: Path) -> dt.datetime:
                          f'{path}')
     if not all(check_is_subvolume(x) for x in path.iterdir()):
         raise ValueError(f'Not all files in {path} are subvolumes')
-    return dt.datetime.strptime(path.name, '%Y-%m-%d-%H:%S')
+    return dt.datetime.strptime(path.name, '%Y-%m-%d-%H:%M')
 
 
 def inventory_library(library: Path) -> dict[dt.datetime, Path]:
