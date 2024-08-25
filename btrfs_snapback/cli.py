@@ -1,21 +1,23 @@
 import datetime as dt
 import os
 import subprocess
+import sys
 from pathlib import Path
 import re
+from typing import Iterable
 
 import click
 from click import Path as PArg
 
 
 timestamp_re = re.compile(r'^\d\d\d\d-\d\d-\d\d-\d\d:\d\d$')
+timestamp_format = '%Y-%m-%d-%H:%M'
 
 
 # Here largely to make mocking easier.
 def run_btrfs(args: list[str]) -> int:
     return subprocess.call(['btrfs'] + args,
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
+                           stdout=subprocess.DEVNULL)
 
 
 def as_timestamp_snapshot(path: Path) -> dt.datetime:
@@ -26,7 +28,7 @@ def as_timestamp_snapshot(path: Path) -> dt.datetime:
                          f'{path}')
     if not all(check_is_subvolume(x) for x in path.iterdir()):
         raise ValueError(f'Not all files in {path} are subvolumes')
-    return dt.datetime.strptime(path.name, '%Y-%m-%d-%H:%M')
+    return dt.datetime.strptime(path.name, timestamp_format)
 
 
 def inventory_library(library: Path) -> dict[dt.datetime, Path]:
@@ -58,31 +60,24 @@ def check_has_btrfs_tools():
     return result == 0
 
 
-def first_backup(
-        current_timestamp: dt.datetime,
-        todays_snaps: Path,
-        backup_snaps: Path
+def full_backup(
+        pv_exists: bool, sources: Iterable[Path], backup_snaps: Path
 ) -> None:
-    try:
-        backup_snaps.mkdir(exist_ok=False, parents=False)
-    except FileExistsError:
-        raise RuntimeError(f'Backup {backup_snaps} already exists')
     # cd todays_snaps
     # btrfs send -e * | pv -ar | btrfs recv backup_snaps
-    pv_exists = True
-    try:
-        subprocess.check_call(['pv', '--help'], stdout=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
-        pv_exists = False
-    sendlist = list(str(d) for d in todays_snaps.iterdir())
+    btrfs_args = ['btrfs', 'send', '-e']
+    btrfs_args.extend(str(s) for s in sources)
+    # If we didn't add any volumes to backup, then we're done!
+    if len(btrfs_args) <= 3:
+        return
     btrfs_send = subprocess.Popen(
-        ['btrfs', 'send', '-e'] + sendlist,
+        btrfs_args,
         stdout=subprocess.PIPE,
         stdin=subprocess.DEVNULL
     )
     if pv_exists:
         middle = subprocess.Popen(
-            ['pv', '-ar'],
+            ['pv', '-r', '-B', str(4 * 2**20)],
             stdin=btrfs_send.stdout,
             stdout=subprocess.PIPE
         )
@@ -93,10 +88,112 @@ def first_backup(
         stdin=middle.stdout,
         stdout=subprocess.DEVNULL
     )
+    success = True
     btrfs_receive.wait()
+    success = success and btrfs_receive.returncode == 0
     middle.wait()
+    success = success and middle.returncode == 0
     if middle is not btrfs_send:
         btrfs_send.wait()
+        success = success and btrfs_send.returncode == 0
+    if not success:
+        raise RuntimeError(f'Btrfs failed to backup {btrfs_args[3:]!r} '
+                           f'to {backup_snaps}')
+
+
+def single_incremental_backup(
+        pv_exists: bool, snap_path: Path, parent_path: Path, backup_snaps: Path
+) -> None:
+    btrfs_cmd = ['btrfs', 'send', '-p', str(parent_path), str(snap_path)]
+    # print(f'Running btrfs {btrfs_cmd!r}', file=sys.stderr)
+    btrfs_send = subprocess.Popen(
+        btrfs_cmd,
+        stdout=subprocess.PIPE,
+        stdin=subprocess.DEVNULL
+    )
+    if pv_exists:
+        middle = subprocess.Popen(
+            ['pv', '-r', '-B', str(4 * 2**20)],
+            stdin=btrfs_send.stdout,
+            stdout=subprocess.PIPE
+        )
+    else:
+        middle = btrfs_send
+    btrfs_cmd = ['btrfs', 'receive', str(backup_snaps)]
+    # print(f'Also running btrfs {btrfs_cmd!r}', file=sys.stderr)
+    btrfs_receive = subprocess.Popen(
+        btrfs_cmd,
+        stdin=middle.stdout,
+        stdout=subprocess.DEVNULL
+    )
+    success = True
+    btrfs_receive.wait()
+    success = success and btrfs_receive.returncode == 0
+    middle.wait()
+    success = success and middle.returncode == 0
+    if middle is not btrfs_send:
+        btrfs_send.wait()
+        success = success and btrfs_send.returncode == 0
+    if not success:
+        raise RuntimeError(f'Btrfs failed to backup changes from {parent_path} '
+                           f'to {snap_path} to {backup_snaps}')
+
+
+def first_backup(
+        todays_snaps: Path,
+        backup_snaps: Path
+) -> None:
+    pv_exists = True
+    try:
+        subprocess.check_call(['pv', '--help'], stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        pv_exists = False
+    full_backup(pv_exists, todays_snaps.iterdir(), backup_snaps)
+
+
+def incremental_backup(
+        todays_snaps: Path,
+        backup_snaps: Path,
+        snapshot_library: Path,
+        backup_library: Path,
+        common_timestamp: dt.datetime
+) -> None:
+    pv_exists = True
+    try:
+        subprocess.check_call(['pv', '--help'], stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        pv_exists = False
+    backup_prev_snaps = backup_library / timestamp_as_string(common_timestamp)
+    prev_snaps = snapshot_library / timestamp_as_string(common_timestamp)
+    assert backup_prev_snaps.exists()
+    previous_volumes = set()
+    for p in backup_prev_snaps.iterdir():
+        previous_volumes.add(p.name)
+        if not (prev_snaps / p.name).exists():
+            raise RuntimeError(
+                f"{prev_snaps / p.name} does not exist and {p} does exist."
+            )
+    all_names = set(p.name for p in todays_snaps.iterdir())
+    inc_names = all_names & previous_volumes
+    full_names = all_names - previous_volumes
+    full_backup(
+        pv_exists,
+        ((todays_snaps / name) for name in full_names),
+        backup_snaps
+    )
+    for snap_path in (todays_snaps / name for name in inc_names):
+        single_incremental_backup(
+            pv_exists, snap_path, prev_snaps / snap_path.name, backup_snaps
+        )
+#    btrfs_args = ['subvol', 'delete', '-c', ]
+#    btrfs_args.extend(
+#        str(p) for p in backup_snaps.iterdir() if p.name.startswith('_')
+#    )
+#    run_btrfs(btrfs_args)
+
+
+def timestamp_as_string(timestamp: dt.datetime) -> str:
+    return dt.datetime.strftime(timestamp, timestamp_format)
 
 
 @click.command()
@@ -166,26 +263,34 @@ def main(backup_linkdir: Path, snapshot_library: Path, backup_library: Path):
         raise RuntimeError("Backup already at least partly exists for "
                            f"{current_timestamp}")
     print(source_timestamps, dest_timestamps)
-    current_timestamp_str =  current_timestamp.strftime('%Y-%m-%d-%H:%M')
+    common_timestamps = list(
+        sorted(set(source_timestamps.keys()) & set(dest_timestamps.keys()))
+    )
+    current_timestamp_str = timestamp_as_string(current_timestamp)
+    # Create the directory to store the 'local' snapshot of the subvolumes to
+    # backed up and the directory that contains the actual backup.
     todays_snaps = snapshot_library / current_timestamp_str
-    os.mkdir(todays_snaps)
+    try:
+        todays_snaps.mkdir(exist_ok=False, parents=False)
+    except FileExistsError:
+        raise RuntimeError(f'Directory {todays_snaps} already exists')
+    backup_snaps = backup_library / current_timestamp_str
+    try:
+        backup_snaps.mkdir(exist_ok=False, parents=False)
+    except FileExistsError:
+        raise RuntimeError(f'Backup {backup_snaps} already exists')
     for backup_link in backup_linkdir.iterdir():
         run_btrfs([
             'subvol', 'snap', '-r',
             str(backup_link),
             str(todays_snaps / backup_link.name)
         ])
-    common_timestamps = list(
-        sorted(set(source_timestamps.keys()) & set(dest_timestamps.keys()))
-    )
     if len(common_timestamps) == 0:
-        backup_snaps = backup_library / current_timestamp_str
-        first_backup(current_timestamp, todays_snaps, backup_snaps)
+        first_backup(todays_snaps, backup_snaps)
     else:
         incremental_backup(
-            current_timestamp, todays_snaps,
-            source_timestamps, dest_timestamps,
-            common_timestamps[-1]
+            todays_snaps, backup_snaps,
+            snapshot_library, backup_library, common_timestamps[-1]
         )
 
 
