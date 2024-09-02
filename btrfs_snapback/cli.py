@@ -1,7 +1,6 @@
 import datetime as dt
 import os
 import subprocess
-import sys
 from pathlib import Path
 import re
 from typing import Iterable
@@ -105,7 +104,6 @@ def single_incremental_backup(
         pv_exists: bool, snap_path: Path, parent_path: Path, backup_snaps: Path
 ) -> None:
     btrfs_cmd = ['btrfs', 'send', '-p', str(parent_path), str(snap_path)]
-    # print(f'Running btrfs {btrfs_cmd!r}', file=sys.stderr)
     btrfs_send = subprocess.Popen(
         btrfs_cmd,
         stdout=subprocess.PIPE,
@@ -120,7 +118,6 @@ def single_incremental_backup(
     else:
         middle = btrfs_send
     btrfs_cmd = ['btrfs', 'receive', str(backup_snaps)]
-    # print(f'Also running btrfs {btrfs_cmd!r}', file=sys.stderr)
     btrfs_receive = subprocess.Popen(
         btrfs_cmd,
         stdin=middle.stdout,
