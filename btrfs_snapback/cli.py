@@ -185,11 +185,15 @@ def incremental_backup(
         single_incremental_backup(
             pv_exists, snap_path, prev_snaps / snap_path.name, backup_snaps
         )
-#    btrfs_args = ['subvol', 'delete', '-c', ]
-#    btrfs_args.extend(
-#        str(p) for p in backup_snaps.iterdir() if p.name.startswith('_')
-#    )
-#    run_btrfs(btrfs_args)
+
+    def delete_snapshot_directory(snapshot_path: Path):
+        assert snapshot_path.exists() and snapshot_path.is_dir()
+        snaplist = [str(snapshot) for snapshot in snapshot_path.iterdir()]
+        run_btrfs(['subvol', 'delete', '-c'] + snaplist)
+        os.rmdir(snapshot_path)
+
+    delete_snapshot_directory(prev_snaps)
+    delete_snapshot_directory(backup_prev_snaps)
 
 
 def timestamp_as_string(timestamp: dt.datetime) -> str:
@@ -262,7 +266,6 @@ def main(backup_linkdir: Path, snapshot_library: Path, backup_library: Path):
     if current_timestamp in (source_timestamps | dest_timestamps):
         raise RuntimeError("Backup already at least partly exists for "
                            f"{current_timestamp}")
-    print(source_timestamps, dest_timestamps)
     common_timestamps = list(
         sorted(set(source_timestamps.keys()) & set(dest_timestamps.keys()))
     )
@@ -286,8 +289,11 @@ def main(backup_linkdir: Path, snapshot_library: Path, backup_library: Path):
             str(todays_snaps / backup_link.name)
         ])
     if len(common_timestamps) == 0:
+        print("Doing an initial full backup.")
         first_backup(todays_snaps, backup_snaps)
     else:
+        print(f"Doing an incremental backup from "
+              f"{common_timestamps[-1]} to now.")
         incremental_backup(
             todays_snaps, backup_snaps,
             snapshot_library, backup_library, common_timestamps[-1]
